@@ -14,14 +14,34 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
 
+// ── Suprimir logs de Bad MAC que Baileys imprime con console.error directo ──
+const _consoleError = console.error.bind(console);
+console.error = (...args) => {
+    const texto = args.map(a => String(a ?? '')).join(' ');
+    if (
+        texto.includes('Bad MAC') ||
+        texto.includes('Failed to decrypt') ||
+        texto.includes('Session error')
+    ) return;
+    _consoleError(...args);
+};
+
+// ── Suprimir también los que llegan como promesas rechazadas ──
+process.on('unhandledRejection', (reason) => {
+    const msg = reason?.message ?? String(reason ?? '');
+    if (msg.includes('Bad MAC') || msg.includes('Failed to decrypt')) return;
+    console.error('[unhandledRejection]', reason);
+});
+
+// ── Logger de pino completamente silencioso para Baileys ──
 const logger = pino({ level: 'silent' });
 
-// Map<negocioId, { socket, status, qr }>
+// Map<negocioId, { socket, status, qr, reintentos }>
 export const sessions = new Map();
 const messageQueue = new Map();
+const qrListeners  = new Map();
 
-// Callbacks registrados para QR (SSE)
-const qrListeners = new Map();
+// ── Helpers de estado ────────────────────────────────────────
 
 export function onQR(negocioId, callback) {
     qrListeners.set(negocioId, callback);
@@ -32,24 +52,22 @@ export function removeQRListener(negocioId) {
 }
 
 export function getStatus(negocioId) {
-    const s = sessions.get(negocioId);
-    if (!s) return 'disconnected';
-    return s.status;
+    return sessions.get(negocioId)?.status ?? 'disconnected';
 }
 
 export function getSessions() {
     const result = {};
-    for (const [id, s] of sessions) {
-        result[id] = s.status;
-    }
+    for (const [id, s] of sessions) result[id] = s.status;
     return result;
 }
 
 export function encolarMensaje(negocioId, telefono, mensaje) {
     if (!messageQueue.has(negocioId)) messageQueue.set(negocioId, []);
     messageQueue.get(negocioId).push({ telefono, mensaje });
+    console.log(`[${negocioId}] Mensaje encolado (cola: ${messageQueue.get(negocioId).length})`);
 }
 
+// ── Conexión ─────────────────────────────────────────────────
 
 export async function connectSession(negocioId) {
     if (sessions.get(negocioId)?.status === 'open') return;
@@ -66,7 +84,7 @@ export async function connectSession(negocioId) {
         logger,
         printQRInTerminal: false,
         browser: Browsers.ubuntu('Chrome'),
-        version: version
+        version,
     });
 
     sessions.set(negocioId, { socket: sock, status: 'connecting', qr: null, reintentos: 0 });
@@ -74,66 +92,72 @@ export async function connectSession(negocioId) {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
+        // ── QR disponible ──
         if (qr) {
             const session = sessions.get(negocioId);
             if (session) session.qr = qr;
-            const cb = qrListeners.get(negocioId);
-            if (cb) cb(qr);
+            qrListeners.get(negocioId)?.(qr);
         }
 
+        // ── Sesión abierta ──
         if (connection === 'open') {
             const session = sessions.get(negocioId);
-            if (session) {
-                session.status = 'open';
-                session.qr = null;
-            }
+            if (session) { session.status = 'open'; session.qr = null; }
             console.log(`[${negocioId}] Conectado`);
 
+            // Vaciar cola de mensajes pendientes
             const cola = messageQueue.get(negocioId) ?? [];
             if (cola.length > 0) {
                 messageQueue.delete(negocioId);
                 console.log(`[${negocioId}] Enviando ${cola.length} mensajes encolados`);
                 for (const { telefono, mensaje } of cola) {
                     sendMessage(negocioId, telefono, mensaje).catch(e =>
-                        console.error(`[${negocioId}] Error enviando mensaje encolado:`, e.message)
+                        console.error(`[${negocioId}] Error enviando encolado:`, e.message)
                     );
                 }
             }
         }
 
+        // ── Sesión cerrada ──
         if (connection === 'close') {
-            const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            const shouldReconnect = reason !== DisconnectReason.loggedOut;
-            const reintentos = (sessions.get(negocioId)?.reintentos ?? 0) + 1;
+            const reason      = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            const errorMsg    = lastDisconnect?.error?.message ?? '';
+            const reintentos  = (sessions.get(negocioId)?.reintentos ?? 0) + 1;
+            const esBadMAC    = errorMsg.includes('Bad MAC') || errorMsg.includes('Failed to decrypt');
+            const loggedOut   = reason === DisconnectReason.loggedOut;
 
-            console.log(`[${negocioId}] Desconectado. Razón: ${reason}. Reconectar: ${shouldReconnect}`);
             sessions.delete(negocioId);
 
-            // Razón 500 con Bad MAC = sesión corrompida → limpiar y reconectar desde cero
-            if (reason === 500) {
-                console.log(`[${negocioId}] Sesión corrompida. Limpiando credenciales...`);
-                const authDir = path.join(SESSIONS_DIR, negocioId);
-                fs.rmSync(authDir, { recursive: true, force: true });
-                // No reconectar automáticamente — requiere nuevo QR
+            // Sesión corrompida o Bad MAC → eliminar credenciales, requiere nuevo QR
+            if (esBadMAC || reason === 500) {
+                console.log(`[${negocioId}] Sesión inválida. Eliminando credenciales.`);
+                fs.rmSync(path.join(SESSIONS_DIR, negocioId), { recursive: true, force: true });
                 return;
             }
 
-            if (shouldReconnect) {
-                if (reintentos > 5) {
-                    console.log(`[${negocioId}] Demasiados reintentos. Abortando reconexión.`);
-                    sessions.delete(negocioId);
-                    return;
-                }
-                const delay = Math.min(3000 * Math.pow(2, reintentos - 1), 60000); // 3s, 6s, 12s... máx 60s
-                console.log(`[${negocioId}] Reintento ${reintentos}/5 en ${delay/1000}s`);
-                sessions.set(negocioId, { ...(sessions.get(negocioId) ?? {}), reintentos });
-                setTimeout(() => connectSession(negocioId), delay);
+            // Logout explícito → no reconectar
+            if (loggedOut) {
+                console.log(`[${negocioId}] Sesión cerrada (logout).`);
+                return;
             }
+
+            // Error transitorio → backoff exponencial, máx 5 reintentos
+            if (reintentos > 5) {
+                console.log(`[${negocioId}] Demasiados reintentos. Abortando.`);
+                return;
+            }
+
+            const delay = Math.min(3000 * Math.pow(2, reintentos - 1), 60000);
+            console.log(`[${negocioId}] Reintento ${reintentos}/5 en ${delay / 1000}s`);
+            sessions.set(negocioId, { socket: null, status: 'reconnecting', qr: null, reintentos });
+            setTimeout(() => connectSession(negocioId), delay);
         }
     });
 
     sock.ev.on('creds.update', saveCreds);
 }
+
+// ── Envío ─────────────────────────────────────────────────────
 
 export async function sendMessage(negocioId, telefono, mensaje) {
     const session = sessions.get(negocioId);
@@ -141,7 +165,6 @@ export async function sendMessage(negocioId, telefono, mensaje) {
         throw new Error(`Sesión no disponible para negocio ${negocioId}`);
     }
 
-    // Normalizar número: solo dígitos, agregar @s.whatsapp.net
     let numero = telefono.replace(/\D/g, '');
     if (!numero.startsWith('57')) numero = `57${numero}`;
     const jid = numero.includes('@') ? numero : `${numero}@s.whatsapp.net`;
@@ -149,17 +172,14 @@ export async function sendMessage(negocioId, telefono, mensaje) {
     await session.socket.sendMessage(jid, { text: mensaje });
 }
 
+// ── Desconexión limpia ────────────────────────────────────────
+
 export async function disconnectSession(negocioId) {
     const session = sessions.get(negocioId);
     if (!session) return;
 
-    // 1. Intentar logout limpio primero
-    try {
-        await session.socket.logout();
-    } catch (_) {}
+    try { await session.socket.logout(); } catch (_) {}
 
-    // 2. Limpiar estado y archivos después
     sessions.delete(negocioId);
-    const authDir = path.join(SESSIONS_DIR, negocioId);
-    fs.rmSync(authDir, { recursive: true, force: true });
+    fs.rmSync(path.join(SESSIONS_DIR, negocioId), { recursive: true, force: true });
 }

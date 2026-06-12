@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import routes from './routes.js';
-import { connectSession } from './session.manager.js';
+import { connectSession, getSessions } from './session.manager.js';
 import 'dotenv/config';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
