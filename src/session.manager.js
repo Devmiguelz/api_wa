@@ -70,11 +70,24 @@ export function encolarMensaje(negocioId, telefono, mensaje) {
 // ── Conexión ─────────────────────────────────────────────────
 
 export async function connectSession(negocioId) {
-    if (sessions.get(negocioId)?.status === 'open') return;
+    console.log(`[${negocioId}] connectSession() llamado`);
+
+    const estadoActual = sessions.get(negocioId)?.status;
+    if (estadoActual === 'open') {
+        console.log(`[${negocioId}] Ya está conectado, saliendo`);
+        return;
+    }
+    console.log(`[${negocioId}] Estado actual: ${estadoActual ?? 'sin sesión'}`);
 
     const authDir = path.join(SESSIONS_DIR, negocioId);
+    const authExiste = fs.existsSync(authDir);
+    console.log(`[${negocioId}] Carpeta de credenciales existe: ${authExiste} (${authDir})`);
+
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    console.log(`[${negocioId}] Credenciales cargadas. registered: ${state.creds?.registered ?? false}`);
+
     const { version } = await fetchLatestBaileysVersion();
+    console.log(`[${negocioId}] Versión Baileys: ${version}`);
 
     const sock = makeWASocket({
         auth: {
@@ -88,12 +101,15 @@ export async function connectSession(negocioId) {
     });
 
     sessions.set(negocioId, { socket: sock, status: 'connecting', qr: null, reintentos: 0 });
+    console.log(`[${negocioId}] Socket creado, status: connecting`);
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
+        console.log(`[${negocioId}] connection.update → connection: ${connection ?? 'null'}, qr: ${qr ? 'sí' : 'no'}`);
 
         // ── QR disponible ──
         if (qr) {
+            console.log(`[${negocioId}] QR generado, notificando listeners`);
             const session = sessions.get(negocioId);
             if (session) session.qr = qr;
             qrListeners.get(negocioId)?.(qr);
@@ -105,7 +121,6 @@ export async function connectSession(negocioId) {
             if (session) { session.status = 'open'; session.qr = null; }
             console.log(`[${negocioId}] Conectado`);
 
-            // Vaciar cola de mensajes pendientes
             const cola = messageQueue.get(negocioId) ?? [];
             if (cola.length > 0) {
                 messageQueue.delete(negocioId);
@@ -115,35 +130,41 @@ export async function connectSession(negocioId) {
                         console.error(`[${negocioId}] Error enviando encolado:`, e.message)
                     );
                 }
+            } else {
+                console.log(`[${negocioId}] Sin mensajes en cola`);
             }
         }
 
         // ── Sesión cerrada ──
         if (connection === 'close') {
-            const reason      = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            const errorMsg    = lastDisconnect?.error?.message ?? '';
-            const reintentos  = (sessions.get(negocioId)?.reintentos ?? 0) + 1;
-            const esBadMAC    = errorMsg.includes('Bad MAC') || errorMsg.includes('Failed to decrypt');
-            const loggedOut   = reason === DisconnectReason.loggedOut;
+            const reason     = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            const errorMsg   = lastDisconnect?.error?.message ?? '';
+            const reintentos = (sessions.get(negocioId)?.reintentos ?? 0) + 1;
+            const esBadMAC   = errorMsg.includes('Bad MAC') || errorMsg.includes('Failed to decrypt');
+            const loggedOut  = reason === DisconnectReason.loggedOut;
+
+            console.log(`[${negocioId}] Conexión cerrada — razón: ${reason}, errorMsg: "${errorMsg}", esBadMAC: ${esBadMAC}, loggedOut: ${loggedOut}`);
 
             sessions.delete(negocioId);
+            console.log(`[${negocioId}] Eliminado de memoria`);
 
             // Sesión corrompida o Bad MAC → eliminar credenciales, requiere nuevo QR
             if (esBadMAC || reason === 500) {
-                console.log(`[${negocioId}] Sesión inválida. Eliminando credenciales.`);
+                console.log(`[${negocioId}] Sesión inválida. Eliminando credenciales del disco.`);
                 fs.rmSync(path.join(SESSIONS_DIR, negocioId), { recursive: true, force: true });
+                console.log(`[${negocioId}] Credenciales eliminadas. Requiere nuevo QR.`);
                 return;
             }
 
             // Logout explícito → no reconectar
             if (loggedOut) {
-                console.log(`[${negocioId}] Sesión cerrada (logout).`);
+                console.log(`[${negocioId}] Sesión cerrada (logout). No se reconecta.`);
                 return;
             }
 
             // Error transitorio → backoff exponencial, máx 5 reintentos
             if (reintentos > 5) {
-                console.log(`[${negocioId}] Demasiados reintentos. Abortando.`);
+                console.log(`[${negocioId}] Demasiados reintentos (${reintentos}). Abortando reconexión.`);
                 return;
             }
 
@@ -154,14 +175,20 @@ export async function connectSession(negocioId) {
         }
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', () => {
+        console.log(`[${negocioId}] creds.update — guardando credenciales`);
+        saveCreds();
+    });
 }
 
 // ── Envío ─────────────────────────────────────────────────────
 
 export async function sendMessage(negocioId, telefono, mensaje) {
+    console.log(`[${negocioId}] sendMessage() → telefono: ${telefono}`);
+
     const session = sessions.get(negocioId);
     if (!session || session.status !== 'open') {
+        console.log(`[${negocioId}] sendMessage() fallido — status: ${session?.status ?? 'sin sesión'}`);
         throw new Error(`Sesión no disponible para negocio ${negocioId}`);
     }
 
@@ -169,17 +196,63 @@ export async function sendMessage(negocioId, telefono, mensaje) {
     if (!numero.startsWith('57')) numero = `57${numero}`;
     const jid = numero.includes('@') ? numero : `${numero}@s.whatsapp.net`;
 
+    console.log(`[${negocioId}] Enviando a JID: ${jid}`);
     await session.socket.sendMessage(jid, { text: mensaje });
+    console.log(`[${negocioId}] Mensaje enviado OK`);
 }
 
 // ── Desconexión limpia ────────────────────────────────────────
 
 export async function disconnectSession(negocioId) {
+    console.log(`[${negocioId}] Iniciando desconexión...`);
+
     const session = sessions.get(negocioId);
-    if (!session) return;
+    if (!session) {
+        console.log(`[${negocioId}] No hay sesión en memoria, nada que hacer`);
+        return;
+    }
 
-    try { await session.socket.logout(); } catch (_) {}
+    console.log(`[${negocioId}] Sesión encontrada en memoria. Status: ${session.status}`);
 
+    // 1. Limpiar de memoria PRIMERO — evita que connection.update reconecte
     sessions.delete(negocioId);
-    fs.rmSync(path.join(SESSIONS_DIR, negocioId), { recursive: true, force: true });
+    console.log(`[${negocioId}] Eliminado de memoria`);
+
+    // 2. Matar todos los listeners del socket — evita reconexión automática
+    try {
+        session.socket.ev.removeAllListeners();
+        console.log(`[${negocioId}] Listeners removidos`);
+    } catch (e) {
+        console.log(`[${negocioId}] Error removiendo listeners: ${e.message}`);
+    }
+
+    // 3. Limpiar carpeta de sesión en disco
+    const authDir = path.join(SESSIONS_DIR, negocioId);
+    const existeDir = fs.existsSync(authDir);
+    console.log(`[${negocioId}] Carpeta sesión existe en disco: ${existeDir} (${authDir})`);
+
+    if (existeDir) {
+        try {
+            fs.rmSync(authDir, { recursive: true, force: true });
+            console.log(`[${negocioId}] Carpeta eliminada del disco`);
+        } catch (e) {
+            console.error(`[${negocioId}] Error eliminando carpeta:`, e.message);
+        }
+    }
+
+    // 4. Intentar logout en WA — best effort con timeout
+    console.log(`[${negocioId}] Intentando logout en WhatsApp...`);
+    try {
+        await Promise.race([
+            session.socket.logout(),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('timeout 5s')), 5000)
+            ),
+        ]);
+        console.log(`[${negocioId}] Logout de WA exitoso`);
+    } catch (e) {
+        console.log(`[${negocioId}] Logout de WA omitido: ${e.message}`);
+    }
+
+    console.log(`[${negocioId}] Desconexión completa`);
 }
