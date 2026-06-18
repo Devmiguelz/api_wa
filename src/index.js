@@ -81,7 +81,6 @@ app.listen(PORT, () => {
 });
 
 process.on('SIGTERM', () => {
-    console.log('[shutdown] SIGTERM recibido, cerrando servidor...');
-    // Dar tiempo para cerrar conexiones de Baileys
-    setTimeout(() => process.exit(0), 5000);
+    console.log('[shutdown] SIGTERM recibido, cerrando...');
+    process.exit(0);
 });

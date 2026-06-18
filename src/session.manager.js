@@ -86,7 +86,9 @@ export async function connectSession(negocioId) {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     console.log(`[${negocioId}] Credenciales cargadas. registered: ${state.creds?.registered ?? false}`);
 
-    const { version } = await fetchLatestBaileysVersion();
+    const { version } = await fetchLatestBaileysVersion().catch(() => {
+        return { version: [2, 3000, 1023498150] }; // fallback conocido
+    });
     console.log(`[${negocioId}] Versión Baileys: ${version}`);
 
     const sock = makeWASocket({
