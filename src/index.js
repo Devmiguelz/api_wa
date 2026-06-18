@@ -18,7 +18,7 @@ const API_KEY = process.env.API_KEY || 'dev-key';
 app.use(express.json());
 
 // CORS simple — ajusta el origin a tu dominio en producción
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim());
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || '').split(',').map(o => o.trim());
 
 app.use((req, res, next) => {
     const origin = req.headers.origin;
@@ -78,4 +78,10 @@ async function reconectarSesionesGuardadas() {
 app.listen(PORT, () => {
     console.log(`WhatsApp service corriendo en :${PORT}`);
     reconectarSesionesGuardadas();
+});
+
+process.on('SIGTERM', () => {
+    console.log('[shutdown] SIGTERM recibido, cerrando servidor...');
+    // Dar tiempo para cerrar conexiones de Baileys
+    setTimeout(() => process.exit(0), 5000);
 });
