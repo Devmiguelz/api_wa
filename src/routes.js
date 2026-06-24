@@ -11,6 +11,7 @@ import {
     sessions,
     encolarMensaje
 } from './session.manager.js';
+import { sendMessageMeta } from './meta.js';
 
 const router = Router();
 
@@ -130,6 +131,26 @@ router.post('/messages/send', async (req, res) => {
         res.json({ success: true, queued: false });
     } catch (err) {
         // Si falla al enviar (ej: número inválido, error de red) → no encolar, es un error real
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /messages/send-meta
+// body: { telefono, negocioNombre, estadoPedido }
+router.post('/messages/send-meta', async (req, res) => {
+    const { telefono, negocioNombre, estadoPedido } = req.body;
+
+    if (!telefono || !negocioNombre || !estadoPedido) {
+        return res.status(400).json({ 
+            error: 'telefono, negocioNombre y estadoPedido son requeridos' 
+        });
+    }
+
+    try {
+        const resultado = await sendMessageMeta(telefono, negocioNombre, estadoPedido);
+        res.json({ success: true, meta: resultado });
+    } catch (err) {
+        console.error('[send-meta]', err.message);
         res.status(500).json({ error: err.message });
     }
 });
