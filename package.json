@@ -1,16 +1,27 @@
 {
-  "name": "api-send-message-wa-back",
+  "name": "api-wa-nest",
   "version": "1.0.0",
-  "type": "module",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --env-file=.env --watch src/index.js"
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "dev": "nest start --watch"
   },
   "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/platform-express": "^10.0.0",
     "@whiskeysockets/baileys": "^6.7.9",
+    "@hapi/boom": "^10.0.1",
     "dotenv": "^17.4.2",
-    "express": "^4.19.2",
     "pino": "^9.3.2",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "@types/node": "^20.0.0",
+    "@types/qrcode": "^1.5.5",
+    "typescript": "^5.0.0"
   }
 }

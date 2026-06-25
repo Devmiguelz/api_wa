@@ -1,78 +1,70 @@
-# whatsapp-service
+# API WhatsApp DAPI — NestJS
 
-Microservicio Node.js para envío de mensajes WhatsApp por negocio.
-Usa [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys) — conexión por QR scan, sin costo.
+Microservicio NestJS para envío de mensajes WhatsApp por negocio.
+Migrado desde Express/JS puro. Usa Baileys para sesiones y Meta API para plantillas.
 
-## Setup
+## Estructura
+
+```
+src/
+├── main.ts                        # Bootstrap + CORS + puerto
+├── app.module.ts                  # Módulo raíz + middleware API Key
+├── common/
+│   └── api-key.middleware.ts      # Autenticación por header x-api-key
+├── whatsapp/
+│   ├── session.service.ts         # Lógica Baileys (sesiones, envío, cola)
+│   ├── whatsapp.controller.ts     # Endpoints /sessions y /messages/send
+│   └── whatsapp.module.ts
+└── meta/
+    ├── meta.service.ts            # Envío via Meta WhatsApp Business API
+    ├── meta.controller.ts         # Endpoint /messages/send-meta
+    └── meta.module.ts
+```
+
+## Setup local
 
 ```bash
 npm install
-cp .env.example .env   # edita API_KEY y ALLOWED_ORIGIN
+cp .env.example .env   # edita las variables
 npm run dev
+```
+
+## Variables de entorno
+
+```env
+PORT=3000
+API_KEY=tu-clave-secreta
+ALLOWED_ORIGIN=https://tuapp.com,http://localhost:4200
+META_PHONE_ID=tu-phone-id
+META_TOKEN=tu-token-meta
 ```
 
 ## Endpoints
 
 Todos requieren el header: `x-api-key: <tu-clave>`
 
-### Conectar un negocio (escanear QR)
-```
-POST /sessions/:negocioId/connect
-```
-Respuesta:
-```json
-{ "status": "qr_ready", "qr": "data:image/png;base64,..." }
-```
-Muestra el `qr` como `<img src="...">` en el panel admin. El negocio lo escanea con WhatsApp.
-
-### Ver estado de una sesión
-```
-GET /sessions/:negocioId/status
-```
-Respuesta: `{ "status": "open" | "connecting" | "disconnected" }`
-
-### Ver todas las sesiones
-```
-GET /sessions
-```
-
-### Desconectar / cerrar sesión
-```
-DELETE /sessions/:negocioId
-```
-
-### Enviar mensaje
-```
-POST /messages/send
-{
-  "negocioId": "uuid-del-negocio",
-  "telefono": "573001234567",
-  "mensaje": "¡Tu pedido #123 está en camino! 🛵"
-}
-```
-
-## Sesiones persistentes
-
-Las credenciales se guardan en `/sessions/:negocioId/`. Al reiniciar el servidor, reconecta automáticamente todos los negocios que tenían sesión activa — no necesitan re-escanear el QR.
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | /health | Estado del servicio y sesiones activas |
+| GET | /sessions | Lista todos los negocios y su estado |
+| GET | /sessions/:id/status | Estado de una sesión específica |
+| POST | /sessions/:id/connect | Inicia sesión, retorna QR en base64 |
+| DELETE | /sessions/:id | Desconecta y borra credenciales |
+| POST | /messages/send | Envía mensaje via Baileys |
+| POST | /messages/send-meta | Envía plantilla via Meta API |
+| POST | /check-whatsapp | Verifica si un número tiene WhatsApp |
 
 ## Deploy en Railway
 
-1. Crea un nuevo proyecto en [railway.app](https://railway.app)
-2. Conecta este repo
-3. Agrega las variables de entorno (`API_KEY`, `ALLOWED_ORIGIN`)
-4. Railway detecta el `package.json` y despliega automáticamente
+1. Sube este repo a GitHub
+2. En Railway: New Project → Deploy from GitHub repo
+3. Agrega las variables de entorno en el dashboard
+4. Railway detecta el `dockerfile` y hace el build automático
+5. ⚠️ Configura un **volumen persistente** en `/app/sessions` para no perder sesiones en redeploys
 
-> ⚠️ Asegúrate de usar un **volumen persistente** en Railway para la carpeta `/sessions`, de lo contrario las sesiones se pierden al redeploy.
+## Build
 
-## Integración desde Angular
-
-```typescript
-// En el servicio de pedidos, al cambiar estado:
-await this.http.post(`${WA_SERVICE_URL}/messages/send`, {
-  negocioId: pedido.negocio_id,
-  telefono: pedido.cliente_telefono,
-  mensaje: `Tu pedido #${pedido.numero} ahora está: *${nuevoEstado}* ✅`
-}, {
-  headers: { 'x-api-key': environment.waServiceKey }
-}).toPromise();
+```bash
+npm run build   # compila TypeScript → dist/
+npm start       # corre dist/main.js
 ```

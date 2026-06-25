@@ -2,14 +2,17 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Instalar dependencias primero (cache layer)
+# Instalar dependencias (incluyendo devDependencies para el build)
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci
 
-# Copiar código fuente
-COPY src/ ./src/
+# Copiar fuente y compilar TypeScript
+COPY . .
+RUN npm run build
 
-EXPOSE 8080
+# Limpiar devDependencies después del build
+RUN npm prune --omit=dev
 
-# CMD directo a node — Railway envía SIGTERM limpio sin pasar por npm
-CMD ["node", "src/index.js"]
+EXPOSE 3000
+
+CMD ["node", "dist/main.js"]
