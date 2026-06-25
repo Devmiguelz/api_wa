@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { COUNTRY_CODE, META_TEMPLATE_NAME, META_TEMPLATE_LANG } from '../config/constants';
 
 @Injectable()
 export class MetaService {
@@ -8,15 +9,15 @@ export class MetaService {
     const url = `https://graph.facebook.com/v20.0/${process.env.META_PHONE_ID}/messages`;
 
     let numero = telefono.replace(/\D/g, '');
-    if (!numero.startsWith('57')) numero = `57${numero}`;
+    if (!numero.startsWith(COUNTRY_CODE)) numero = `${COUNTRY_CODE}${numero}`;
 
     const body = {
       messaging_product: 'whatsapp',
       to: numero,
       type: 'template',
       template: {
-        name: 'dapi_notificacion_pedido',
-        language: { code: 'es_CO' },
+        name: META_TEMPLATE_NAME,
+        language: { code: META_TEMPLATE_LANG },
         components: [
           {
             type: 'body',

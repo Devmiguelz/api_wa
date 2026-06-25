@@ -1,5 +1,6 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import makeWASocket, {
+  WASocket,
   useMultiFileAuthState,
   DisconnectReason,
   makeCacheableSignalKeyStore,
@@ -10,44 +11,25 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import * as fs from 'fs';
 import * as path from 'path';
-
-// ── Suprimir logs de Bad MAC ──────────────────────────────────
-const _consoleError = console.error.bind(console);
-console.error = (...args) => {
-  const texto = args.map((a) => String(a ?? '')).join(' ');
-  if (
-    texto.includes('Bad MAC') ||
-    texto.includes('Failed to decrypt') ||
-    texto.includes('Session error')
-  )
-    return;
-  _consoleError(...args);
-};
-
-process.on('unhandledRejection', (reason: any) => {
-  const msg = reason?.message ?? String(reason ?? '');
-  if (msg.includes('Bad MAC') || msg.includes('Failed to decrypt')) return;
-  console.error('[unhandledRejection]', reason);
-});
+import { COUNTRY_CODE, SUPERADMIN_SESSION_ID } from '../config/constants';
 
 const logger = pino({ level: 'silent' });
 
 interface SessionData {
-  socket: any;
+  socket: WASocket | null;
   status: 'connecting' | 'open' | 'disconnected' | 'reconnecting';
   qr: string | null;
   reintentos: number;
 }
 
 @Injectable()
-export class SessionService implements OnModuleInit {
+export class SessionService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(SessionService.name);
   private readonly SESSIONS_DIR = path.join(process.cwd(), 'sessions');
   private readonly sessions = new Map<string, SessionData>();
   private readonly messageQueue = new Map<string, { telefono: string; mensaje: string }[]>();
   private readonly qrListeners = new Map<string, (qr: string) => void>();
-
-  // ── Lifecycle ────────────────────────────────────────────────
+  private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
 
   async onModuleInit() {
     if (!fs.existsSync(this.SESSIONS_DIR)) {
@@ -66,7 +48,10 @@ export class SessionService implements OnModuleInit {
     }
   }
 
-  // ── Helpers de estado ────────────────────────────────────────
+  async onModuleDestroy() {
+    for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
+    this.reconnectTimers.clear();
+  }
 
   onQR(negocioId: string, callback: (qr: string) => void) {
     this.qrListeners.set(negocioId, callback);
@@ -96,13 +81,10 @@ export class SessionService implements OnModuleInit {
     return this.sessions.get(negocioId);
   }
 
-  // ── Conexión ─────────────────────────────────────────────────
-
   async connectSession(negocioId: string) {
     this.log.log(`[${negocioId}] connectSession() llamado`);
 
-    const estadoActual = this.sessions.get(negocioId)?.status;
-    if (estadoActual === 'open') {
+    if (this.sessions.get(negocioId)?.status === 'open') {
       this.log.log(`[${negocioId}] Ya está conectado, saliendo`);
       return;
     }
@@ -181,14 +163,17 @@ export class SessionService implements OnModuleInit {
         const delay = Math.min(3000 * Math.pow(2, reintentos - 1), 60000);
         this.log.log(`[${negocioId}] Reintento ${reintentos}/5 en ${delay / 1000}s`);
         this.sessions.set(negocioId, { socket: null, status: 'reconnecting', qr: null, reintentos });
-        setTimeout(() => this.connectSession(negocioId), delay);
+
+        const timer = setTimeout(() => {
+          this.reconnectTimers.delete(negocioId);
+          this.connectSession(negocioId);
+        }, delay);
+        this.reconnectTimers.set(negocioId, timer);
       }
     });
 
     sock.ev.on('creds.update', saveCreds);
   }
-
-  // ── Envío ─────────────────────────────────────────────────────
 
   async sendMessage(negocioId: string, telefono: string, mensaje: string) {
     const session = this.sessions.get(negocioId);
@@ -197,22 +182,23 @@ export class SessionService implements OnModuleInit {
     }
 
     let numero = telefono.replace(/\D/g, '');
-    if (!numero.startsWith('57')) numero = `57${numero}`;
+    if (!numero.startsWith(COUNTRY_CODE)) numero = `${COUNTRY_CODE}${numero}`;
     const jid = numero.includes('@') ? numero : `${numero}@s.whatsapp.net`;
 
-    await session.socket.sendMessage(jid, { text: mensaje });
+    await session.socket!.sendMessage(jid, { text: mensaje });
     this.log.log(`[${negocioId}] Mensaje enviado a ${jid}`);
   }
-
-  // ── Desconexión ───────────────────────────────────────────────
 
   async disconnectSession(negocioId: string) {
     const session = this.sessions.get(negocioId);
     if (!session) return;
 
+    const timer = this.reconnectTimers.get(negocioId);
+    if (timer) { clearTimeout(timer); this.reconnectTimers.delete(negocioId); }
+
     this.sessions.delete(negocioId);
 
-    try { session.socket.ev.removeAllListeners(); } catch (_) {}
+    try { (session.socket?.ev as any)?.removeAllListeners?.(); } catch (_) {}
 
     const authDir = path.join(this.SESSIONS_DIR, negocioId);
     if (fs.existsSync(authDir)) {
@@ -221,7 +207,7 @@ export class SessionService implements OnModuleInit {
 
     try {
       await Promise.race([
-        session.socket.logout(),
+        session.socket?.logout() ?? Promise.resolve(),
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
       ]);
     } catch (_) {}
@@ -229,20 +215,17 @@ export class SessionService implements OnModuleInit {
     this.log.log(`[${negocioId}] Desconexión completa`);
   }
 
-  // ── Check WhatsApp ────────────────────────────────────────────
-
   async checkWhatsapp(telefono: string): Promise<{ exists: boolean; jid: string | null }> {
-    const SESSION_ID = 'superadmin';
-    const session = this.sessions.get(SESSION_ID);
+    const session = this.sessions.get(SUPERADMIN_SESSION_ID);
 
     if (!session || session.status !== 'open') {
       throw new Error('Sesión superadmin no disponible');
     }
 
     let numero = telefono.replace(/\D/g, '');
-    if (!numero.startsWith('57')) numero = `57${numero}`;
+    if (!numero.startsWith(COUNTRY_CODE)) numero = `${COUNTRY_CODE}${numero}`;
 
-    const [result] = await session.socket.onWhatsApp(numero);
-    return { exists: result?.exists ?? false, jid: result?.jid ?? null };
+    const [result] = await session.socket!.onWhatsApp(numero);
+    return { exists: !!result?.exists, jid: (result?.jid as string) ?? null };
   }
 }
