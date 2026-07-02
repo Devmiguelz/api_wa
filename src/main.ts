@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { json } from 'express';
 import { AppModule } from './app.module';
 
 process.on('unhandledRejection', (reason: any) => {
@@ -10,7 +11,20 @@ process.on('unhandledRejection', (reason: any) => {
 });
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { logger: ['log', 'error', 'warn'] });
+  // bodyParser: false porque necesitamos capturar el cuerpo crudo (rawBody)
+  // exacto que envió el cliente, para poder verificar su firma HMAC.
+  const app = await NestFactory.create(AppModule, {
+    logger: ['log', 'error', 'warn'],
+    bodyParser: false,
+  });
+
+  app.use(
+    json({
+      verify: (req: any, _res, buf) => {
+        req.rawBody = buf.toString('utf8');
+      },
+    }),
+  );
 
   const allowedOrigins = (process.env.ALLOWED_ORIGIN || '').split(',').map(o => o.trim());
 
@@ -23,12 +37,13 @@ async function bootstrap() {
       }
     },
     methods: ['GET', 'POST', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'x-api-key'],
+    allowedHeaders: ['Content-Type', 'x-dapi-ts', 'x-dapi-sig'],
   });
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
 
-  const missing = ['META_TOKEN', 'META_PHONE_ID'].filter(k => !process.env[k]);
+  const missing = ['META_TOKEN', 'META_PHONE_ID', 'DAPI_SIGNING_SECRET', 'GEMINI_API_KEY', 'GOOGLE_VISION_API_KEY']
+    .filter(k => !process.env[k]);
   if (missing.length) {
     console.warn(`[config] Variables de entorno no definidas: ${missing.join(', ')}`);
   }
