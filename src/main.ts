@@ -42,7 +42,7 @@ async function bootstrap() {
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
 
-  const missing = ['META_TOKEN', 'META_PHONE_ID', 'DAPI_SIGNING_SECRET', 'GEMINI_API_KEY', 'GOOGLE_VISION_API_KEY']
+  const missing = ['META_TOKEN', 'META_PHONE_ID', 'DAPI_SIGNING_SECRET', 'GEMINI_API_KEY', 'GOOGLE_VISION_API_KEY', 'OPENAI_API_KEY']
     .filter(k => !process.env[k]);
   if (missing.length) {
     console.warn(`[config] Variables de entorno no definidas: ${missing.join(', ')}`);

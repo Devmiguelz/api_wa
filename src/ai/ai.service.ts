@@ -18,14 +18,24 @@ interface IDescripcionProductoInput {
 
 @Injectable()
 export class AiService {
-  private get apiKey(): string {
+  private get geminiApiKey(): string {
     const key = process.env.GEMINI_API_KEY;
     if (!key) throw new InternalServerErrorException('GEMINI_API_KEY no configurada en el servidor');
     return key;
   }
 
-  private get endpoint(): string {
-    return `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.apiKey}`;
+  private get geminiEndpoint(): string {
+    return `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.geminiApiKey}`;
+  }
+
+  private get openaiApiKey(): string {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) throw new InternalServerErrorException('OPENAI_API_KEY no configurada en el servidor');
+    return key;
+  }
+
+  private get openaiModel(): string {
+    return process.env.OPENAI_MODEL || 'gpt-4o-mini';
   }
 
   async resumirCierre(datos: IResumenCierreInput): Promise<string> {
@@ -53,7 +63,7 @@ ${diferenciaTexto}
 
 Responde solo con el resumen, sin encabezados ni saludos.`;
 
-    return this.llamarGemini(prompt);
+    return this.llamarOpenAI(prompt);
   }
 
   async generarDescripcionProducto(datos: IDescripcionProductoInput): Promise<string> {
@@ -69,7 +79,7 @@ Responde solo con la descripción, sin comillas ni encabezados.`;
   }
 
   private async llamarGemini(prompt: string): Promise<string> {
-    const response = await fetch(this.endpoint, {
+    const response = await fetch(this.geminiEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -82,6 +92,28 @@ Responde solo con la descripción, sin comillas ni encabezados.`;
 
     const json = await response.json();
     const texto = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    return texto.trim();
+  }
+
+  private async llamarOpenAI(prompt: string): Promise<string> {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.openaiApiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.openaiModel,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        max_tokens: 256,
+      }),
+    });
+
+    if (!response.ok) throw new InternalServerErrorException(`OpenAI error ${response.status}`);
+
+    const json = await response.json();
+    const texto = json?.choices?.[0]?.message?.content ?? '';
     return texto.trim();
   }
 }
