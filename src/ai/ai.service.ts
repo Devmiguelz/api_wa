@@ -18,16 +18,6 @@ interface IDescripcionProductoInput {
 
 @Injectable()
 export class AiService {
-  private get geminiApiKey(): string {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new InternalServerErrorException('GEMINI_API_KEY no configurada en el servidor');
-    return key;
-  }
-
-  private get geminiEndpoint(): string {
-    return `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.geminiApiKey}`;
-  }
-
   private get openaiApiKey(): string {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new InternalServerErrorException('OPENAI_API_KEY no configurada en el servidor');
@@ -75,24 +65,7 @@ Precio: $${datos.precio.toLocaleString('es-CO')}
 
 Responde solo con la descripción, sin comillas ni encabezados.`;
 
-    return this.llamarGemini(prompt);
-  }
-
-  private async llamarGemini(prompt: string): Promise<string> {
-    const response = await fetch(this.geminiEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 256 },
-      }),
-    });
-
-    if (!response.ok) throw new InternalServerErrorException(`Gemini error ${response.status}`);
-
-    const json = await response.json();
-    const texto = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    return texto.trim();
+    return this.llamarOpenAI(prompt);
   }
 
   private async llamarOpenAI(prompt: string): Promise<string> {
